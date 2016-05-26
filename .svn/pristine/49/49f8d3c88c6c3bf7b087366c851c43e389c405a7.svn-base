@@ -1,0 +1,36 @@
+#pragma once
+#include "RTSPServerConfig.h"
+#include "Mutex.h"
+#include <stdlib.h>
+#include <vector>
+#include "liveMedia.hh"
+
+using namespace std;
+
+class MyMediaSource;
+class MyAudioSource : public FramedSource
+{
+public:
+	static MyAudioSource* createNew(UsageEnvironment& env, MyMediaSource& mediaSource);
+
+	void Add(AVPacket* packet);
+    void AddPCM(uint8_t* buf, int size);
+private:
+	MyAudioSource(UsageEnvironment& env, MyMediaSource& mediaSource);
+	~MyAudioSource(void);
+
+	virtual void doGetNextFrame();
+    
+    uint8_t*   m_buffer;
+    int         m_bufSize;
+private:
+	MyMediaSource& m_mediaSource;
+
+	OSMutex m_mutex;
+	vector<AVPacket*> m_packetArray;
+
+    static void audioReadyPoller(void* clientData);
+	static EventTriggerId m_eventTriggerID;
+	static void deliverFrame0(void* clientData);
+	void deliverFrame();
+};

@@ -1,0 +1,69 @@
+//
+//  CameraServer.h
+//  Encoder Demo
+//
+//  Created by Geraint Davies on 19/02/2013.
+//  Copyright (c) 2013 GDCL http://www.gdcl.co.uk/license.htm
+//
+
+#import <Foundation/Foundation.h>
+#import "AVFoundation/AVCaptureSession.h"
+#import "AVFoundation/AVCaptureOutput.h"
+#import "AVFoundation/AVCaptureDevice.h"
+#import "AVFoundation/AVCaptureInput.h"
+#import "AVFoundation/AVCaptureVideoPreviewLayer.h"
+#import "AVFoundation/AVMediaFormat.h"
+#import "AVFoundation/AVAssetWriter.h"
+#import "AVFoundation/AVAssetWriterInput.h"
+#import "AVFoundation/AVVideoSettings.h"
+#import "AVFoundation/AVAudioSettings.h"
+
+#import <AudioToolbox/AudioServices.h>
+
+#import "JSQueue.h"
+#import "RTSPServerManager.h"
+#import "AQRecorder.h"
+#include "Mutex.h"
+
+@interface CameraServer : NSObject<AVCaptureAudioDataOutputSampleBufferDelegate, AVCaptureVideoDataOutputSampleBufferDelegate>
+{
+    RTSPServerManager* m_serverManager;
+    
+    // Video Codec
+    AVCodecContext *m_vContext;
+    u_int8_t* m_pYUBBuffer;
+    SwsContext* m_vConvContext;
+
+    AVCodecContext* m_aContext;
+    SwrContext* m_aConvContext;
+    unsigned int m_videoBufferSize;
+    unsigned char* m_videoBuffer;
+    int m_captureWidth;
+    int m_captureHeight;
+    // Audio Codec
+    BOOL m_fInit;
+    uint8_t* m_audioBuffer;
+    unsigned int m_audioBufferSize;
+    char*       m_tmpBuf;
+    AQRecorder*                 m_pRecorder;
+    
+    BOOL m_bStopThreads;
+    OSMutex m_audioMutex;
+    OSMutex m_videoMutex;
+@public
+    AVCaptureSession* _session;
+    AVCaptureDevice* dev;
+    
+    AVCaptureVideoPreviewLayer* _preview;
+    AVCaptureVideoDataOutput* _videoOutput;
+    AVCaptureAudioDataOutput* _audioOutput;
+}
+@property (nonatomic, assign) NSString* path;
+
++ (CameraServer*) server;
+- (void) startup:(AVCaptureDevicePosition)cameraType;
+- (void) shutdown;
+- (NSString*) getURL;
+- (AVCaptureVideoPreviewLayer*) getPreviewLayer;
+-(void)CapturedAudioBuffer:(SInt16*)buffer size:(int)bufSize;
+@end

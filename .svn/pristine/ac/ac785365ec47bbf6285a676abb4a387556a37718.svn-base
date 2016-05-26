@@ -1,0 +1,145 @@
+
+#include "MyAudioSource.h"
+#include "MyMediaSource.h"
+#include "GroupsockHelper.hh"
+#include "UsageEnvironment.hh"
+
+EventTriggerId MyAudioSource::m_eventTriggerID = 0;
+
+MyAudioSource* MyAudioSource::createNew(UsageEnvironment& env, MyMediaSource& mediaSource)
+{
+	return new MyAudioSource( env, mediaSource );
+}
+
+MyAudioSource::MyAudioSource(UsageEnvironment& env, MyMediaSource& mediaSource)
+	: FramedSource( env ), m_mediaSource( mediaSource )
+{
+    m_buffer = new uint8_t[4096 * 100];
+    m_bufSize = 0;
+	if (m_eventTriggerID == 0)
+		m_eventTriggerID = envir().taskScheduler().createEventTrigger(deliverFrame0);
+}
+
+MyAudioSource::~MyAudioSource(void)
+{
+	m_mediaSource.m_pASource = NULL;
+
+	envir().taskScheduler().deleteEventTrigger( m_eventTriggerID );
+	m_eventTriggerID = 0;
+
+	while (!m_packetArray.empty())
+	{
+		AVPacket* packet = (AVPacket*)m_packetArray[0];
+		m_packetArray.erase(m_packetArray.begin());
+		av_free_packet( packet );
+		delete packet;
+	}
+}
+
+void MyAudioSource::audioReadyPoller(void* clientData) {
+    MyAudioSource* inputDevice = (MyAudioSource*)clientData;
+    inputDevice->doGetNextFrame();
+}
+
+void MyAudioSource::doGetNextFrame()
+{
+	if (m_bufSize != 0)
+		deliverFrame();
+    else
+        nextTask() = envir().taskScheduler().scheduleDelayedTask(1000, (TaskFunc*)audioReadyPoller, this);
+}
+
+void MyAudioSource::Add(AVPacket* packet)
+{
+	if (packet == NULL)
+		return;
+
+	AVPacket* newPacket = new AVPacket;
+	av_copy_packet( newPacket, packet );
+
+    printf(" push buffer Size: %d\n", (int)m_packetArray.size());
+    m_mutex.Lock();
+	m_packetArray.push_back(newPacket);
+	m_mutex.Unlock();
+}
+
+void MyAudioSource::AddPCM(uint8_t* buf, int size)
+{
+    if (m_bufSize > 4096 * 100)
+        return;
+    memcpy(m_buffer + m_bufSize, buf, size);
+    m_bufSize += size;
+}
+
+
+void MyAudioSource::deliverFrame0(void* clientData)
+{
+	((MyAudioSource*)clientData)->deliverFrame();
+}
+
+void MyAudioSource::deliverFrame()
+{
+	if (!isCurrentlyAwaitingData())
+		return;
+    
+    if (m_bufSize == 0)
+        return;
+    
+	if (m_bufSize > fMaxSize)
+	{
+		fFrameSize = fMaxSize;
+		fNumTruncatedBytes = m_bufSize - fMaxSize;
+	}
+	else
+	{
+		fFrameSize = m_bufSize;
+ 		fNumTruncatedBytes = 0;
+	}
+    
+	memcpy(fTo, m_buffer, fFrameSize);
+    memmove(m_buffer, m_buffer + fFrameSize, m_bufSize - fFrameSize);
+    m_bufSize -= fFrameSize;
+    
+	FramedSource::afterGetting(this);
+}
+
+//void MyAudioSource::deliverFrame()
+//{
+//	if (!isCurrentlyAwaitingData())
+//		return;
+//
+//    if (m_packetArray.empty())
+//        return;
+//
+//    
+//    AVPacket* packet = (AVPacket*)m_packetArray[0];
+//	// Deliver the data here:
+//	if (packet->size > fMaxSize)
+//	{
+//		fFrameSize = fMaxSize;
+//		fNumTruncatedBytes = packet->size - fMaxSize;
+//	}
+//	else
+//	{
+//		fFrameSize = packet->size;
+// 		fNumTruncatedBytes = 0;
+//	}
+//
+//	memmove(fTo, packet->data, fFrameSize);
+//
+//	if (fNumTruncatedBytes == 0)
+//	{
+//		m_mutex.Lock();
+//		m_packetArray.erase(m_packetArray.begin());
+//		m_mutex.Unlock();
+//		av_free_packet( packet );
+//		delete packet;
+//	}
+//	else
+//	{
+//		memmove( packet->data, packet->data + fFrameSize, fNumTruncatedBytes );
+//		packet->size = fNumTruncatedBytes;
+//	}
+//    
+//	FramedSource::afterGetting(this);
+//}

@@ -1,0 +1,14 @@
+prefix=/Users/songil/Desktop/ffmpeg-2.1.1/build/built/armv7
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libavdevice
+Description: FFmpeg device handling library
+Version: 55.3.100
+Requires: libavfilter = 3.79.101, libavformat = 55.12.100
+Requires.private: 
+Conflicts:
+Libs: -L${libdir} -lavdevice -lx264 -lm -lz
+Libs.private: 
+Cflags: -I${includedir}

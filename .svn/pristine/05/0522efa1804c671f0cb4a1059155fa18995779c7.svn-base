@@ -1,0 +1,382 @@
+//
+//  OrantekCameraSearch.m
+//  EyeBaby
+//
+
+#import "OrantekCameraSearch.h"
+#import "Utils.h"
+
+#include "Orantek.h"
+
+#define BUFFER_SIZE     512
+#define RESTART_COUNT   10
+
+@implementation OrantekCameraSearch
+
+//------------------------------------------------------------------------------
+#pragma mark - Listening thread
+
+- (BOOL)listenCameras
+{
+	struct sockaddr_in              addr_self;
+	struct sockaddr_in              addr_other;
+	int                             nSocket;
+	socklen_t                       slen = sizeof(addr_other);
+	ssize_t                         nLen;
+	char                            buffer[BUFFER_SIZE];
+	const struct ORANTEK_HEADER*    pDatagram;
+	const char*                     pData;
+	const char*                     pEnd;
+    int                             nRestartCounter;
+    
+	uint16_t                        nStrType, nStrLen;
+	const char*                     pStrBase;
+    
+    fd_set                          socks;
+    struct timeval                  tv;
+    
+    // Loop while restart called effect...
+    do {
+        // Initialize...
+        nRestartCounter = 0;
+        
+        // Open socket...
+        nSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+        if (nSocket == -1)
+        {
+            TRACE(@"Failed to open listening socket.");
+            return NO;
+        }
+        
+        // Set up listening socket...
+        memset(&addr_self, 0, sizeof(addr_self));
+        addr_self.sin_family = AF_INET;
+        addr_self.sin_port = htons(ORANTEK_PORT_SEARCH);
+        addr_self.sin_addr.s_addr = htonl(INADDR_ANY);
+        if (bind(nSocket, (struct sockaddr*) &addr_self, sizeof(addr_self)) == -1)
+        {
+            close(nSocket);
+            TRACE(@"Failed to bind listening socket.");
+            return NO;
+        }
+
+        // Prepare for non-blocking operation...        
+        FD_ZERO(&socks);
+        FD_SET(nSocket, &socks);
+        tv.tv_sec = 0;          // 0 second timeout
+        tv.tv_usec = 500000;    // 500 milliseconds
+
+        // Wait for datagrams...
+        while (![[NSThread currentThread] isCancelled])
+        {
+            // Check for datagram...
+            nLen = select(nSocket + 1, &socks, NULL, NULL, &tv);
+            
+            if (nLen < 0)
+            {
+                TRACE(@"select() returned error.");
+                break;
+            }
+            
+            // Timeout?
+            if (nLen == 0)
+            {
+                // Increment the restart counter...
+                ++nRestartCounter;
+                if (nRestartCounter >= RESTART_COUNT)
+                {
+                    break;
+                }
+                else
+                {
+                    continue;
+                }
+            }
+            
+            // Get next datagram...
+            nLen = recvfrom(
+                            nSocket,
+                            buffer,
+                            BUFFER_SIZE,
+                            0, 
+                            (struct sockaddr*) &addr_other, 
+                            &slen);
+            
+            // Watch for failure...
+            if (nLen == -1)
+            {
+                TRACE(@"recvfrom() error.");
+                break;
+            }
+            
+            // Filter irrelevant datagrams...
+            if (nLen < sizeof(struct ORANTEK_HEADER)) continue;
+            
+            // Filter header...
+            pDatagram = (const struct ORANTEK_HEADER*) buffer;
+            if (pDatagram->magic != htonl(ORANTEK_MAGIC)) continue;
+            if (pDatagram->type != htons(ORANTEK_PKTYPE_RESPONSE)) continue;
+            
+            // Camera data object...
+            OrantekCameraProperties* cam = [[OrantekCameraProperties alloc] init];
+            
+            // Process strings...
+            pData = buffer + sizeof(struct ORANTEK_HEADER);
+            pEnd = buffer + nLen;
+            while (pData < pEnd)
+            {
+                // Load the next string...
+                pData = Orantek_GetString(pData, &nStrType, &nStrLen, &pStrBase);
+                
+                // Store the strings...        
+                switch(nStrType)
+                {
+                    case ORANTEK_STR_CAMERA_MODEL:
+                        cam.cameraModel = [Utils stringFromBuffer:pStrBase length:nStrLen];
+                        break;
+                        
+                    case ORANTEK_STR_MAC_ADDRESS:
+                        cam.macAddress = [Utils stringFromBuffer:pStrBase length:nStrLen];
+                        break;
+                        
+                    case ORANTEK_STR_LOCATION:
+                        cam.location = [Utils stringFromBuffer:pStrBase length:nStrLen];
+                        break;
+                        
+                    case ORANTEK_STR_NAME:
+                        cam.name = [Utils stringFromBuffer:pStrBase length:nStrLen];
+                        break;
+                        
+                    case ORANTEK_STR_IP_ADDRESS:
+                        cam.ipAddress = [Utils stringFromBuffer:pStrBase length:nStrLen];
+                        break;
+                        
+                    case ORANTEK_STR_PORT:
+                        cam.port = [Utils stringFromBuffer:pStrBase length:nStrLen];
+                        break;
+                }
+            }
+            
+            // Verify and add the camera...
+            [self addCamera:cam];
+            
+            // Clean up...
+            cam = nil;
+        }
+        
+        // Clean up...
+        close(nSocket);
+        
+    } while (nRestartCounter >= RESTART_COUNT && ![[NSThread currentThread] isCancelled]);
+
+    TRACE(@"Terminated.");    
+	
+	// Done...
+	return YES;    
+}
+
+- (void)backgroundTask
+{
+    @autoreleasepool
+    {
+        [self listenCameras];
+    }
+}
+
+//------------------------------------------------------------------------------
+#pragma mark - Camera search
+
+-(void)startListening
+{
+    TRACE(@"Start listening.");
+    
+    if (!m_pBackgroundThread)
+    {
+        m_pBackgroundThread = [[NSThread alloc] initWithTarget:self selector:@selector(backgroundTask) object:nil];
+        [m_pBackgroundThread start];
+    }
+}
+
+-(void)stopListeningAndWait:(BOOL)wait
+{
+    TRACE(@"Stop listening.");
+    
+    if (m_pBackgroundThread)
+    {
+        [m_pBackgroundThread cancel];
+        if (wait)
+        {
+            while (![m_pBackgroundThread isFinished]);
+        }
+        
+        m_pBackgroundThread = nil;
+    }
+}
+
+-(BOOL)sendSearchRequest
+{
+	struct sockaddr_in      addr;
+	struct ORANTEK_HEADER   packet;
+	int                     nSocket;
+	int                     nResult;
+    BOOL                    bSuccess;
+    
+	// Initialize packet...
+	memset(&packet, 0, sizeof(struct ORANTEK_HEADER));
+	packet.magic = htonl(ORANTEK_MAGIC);
+    packet.type = htons(ORANTEK_PKTYPE_SEARCH);
+    /*
+     NOTE: Technically the mac address field in the datagram should be
+     filled out, but this seems to work with the mac address set to all zero.
+     
+     If there is a problem with future models of Orantek cameras, this may 
+     be the cause.
+     */
+    
+	// Open UDP socket...
+	nSocket = socket(AF_INET, SOCK_DGRAM, IPPROTO_UDP);
+	if (nSocket == -1)
+	{
+		return NO;
+	}
+    
+	// Set up as a broadcast socket...
+	nResult = 1;
+	if (setsockopt(nSocket, SOL_SOCKET, SO_BROADCAST, &nResult, sizeof(nResult)) == -1)
+	{
+		return NO;
+	}
+    
+	// Desination address (broadcast)...
+	memset((char*) &addr, 0, sizeof(addr));
+	addr.sin_family = AF_INET;
+	addr.sin_port = htons(ORANTEK_PORT_SEARCH);
+	addr.sin_addr.s_addr = htonl(INADDR_BROADCAST);
+    
+	// Send out packet...
+    bSuccess = YES;
+	nResult = sendto(
+                     nSocket,
+                     &packet,
+                     sizeof(packet),
+                     0,
+                     (const struct sockaddr*) &addr,
+                     sizeof(addr));
+	if (nResult == -1)
+	{
+		TRACE(@"Failed to send out search datagram.");
+        bSuccess = NO;
+	}
+    
+	// Clean up...
+	close(nSocket);
+    
+	// Done...
+	return bSuccess;
+}
+
+//------------------------------------------------------------------------------
+#pragma mark - Camera list
+
+- (void)addCamera:(OrantekCameraProperties*)camera
+{
+    @synchronized(self)
+    {        
+        // Check if the camera is already present...
+        for (OrantekCameraProperties* pOtherCam in m_pCameras)
+        {            
+            // Are they the same camera?
+            if ([camera isEqualToCamera:pOtherCam])
+            {
+                // Update the existing details...
+                if ([pOtherCam updateCoreDetails:camera])
+                {
+                    m_bChanged = YES;
+                }
+                
+                // Done...
+                return;
+            }
+        }
+        
+        // Add the object...
+        [m_pCameras addObject:camera];
+        
+        // Log the change...
+        TRACE(@"Camera added: %@", camera.macAddress);
+        
+        // Update of display will be required...
+        m_bChanged = YES;
+    }
+}
+
+- (int)count
+{
+    int n;
+    
+    @synchronized(self)
+    {
+        n = [m_pCameras count];
+    }
+    
+    return n;
+}
+
+- (OrantekCameraProperties*)get:(int)index
+{
+    OrantekCameraProperties* p;
+    
+    @synchronized(self)
+    {
+        if (index < 0 || index >= [m_pCameras count]) return nil; 
+        p = [m_pCameras objectAtIndex:(NSUInteger) index];
+    }
+    
+    return p;
+}
+
+- (void)clear
+{
+    @synchronized(self)
+    {
+        [m_pCameras removeAllObjects];
+    }
+}
+
+- (BOOL)hasChanged
+{
+    BOOL bChanged;
+    
+    @synchronized(self)
+    {
+        bChanged = m_bChanged;
+        m_bChanged = NO;
+    }
+    
+    return bChanged;
+}
+
+//------------------------------------------------------------------------------
+#pragma mark - Object life cycle
+
+- (id)init
+{
+    self = [super init];
+    
+    if (self != nil)
+    {
+        m_bChanged = NO;
+        m_pCameras = [[NSMutableArray alloc] init];
+        
+        m_pBackgroundThread = nil;
+    }
+    
+    return self;
+}
+
+- (void)dealloc
+{
+    [self stopListeningAndWait:NO];
+}
+
+@end

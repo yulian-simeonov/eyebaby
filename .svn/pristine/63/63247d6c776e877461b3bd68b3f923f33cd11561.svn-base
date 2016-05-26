@@ -1,0 +1,212 @@
+//
+//  DFUViewController.m
+//  DFURTSPPlayer
+//
+//  Created by Bogdan Furdui on 3/7/13.
+//  Copyright (c) 2013 Bogdan Furdui. All rights reserved.
+//
+
+#import "MonitorViewController.h"
+#import "RTSPPlayer.h"
+#import "Utilities.h"
+#import "JSWaiter.h"
+
+@implementation MonitorViewController
+
+- (id)initWithNibName:(NSString *)nibNameOrNil bundle:(NSBundle *)nibBundleOrNil
+{
+    if ((self = [super initWithNibName:nibNameOrNil bundle:nibBundleOrNil])) {
+        
+    }
+    
+    return self;
+}
+
+- (void)dealloc
+{
+	m_runThread = false;
+    [video closeAudio];
+    [video release];
+	[imageView release];
+    imageView = nil;
+    [super dealloc];
+}
+
+- (void)viewDidLoad
+{
+    [super viewDidLoad];
+    
+    UIBarButtonItem* btn = [[UIBarButtonItem alloc]
+                            initWithBarButtonSystemItem:UIBarButtonSystemItemCamera
+                            target:self
+                            action:@selector(barButtonClicked)];
+    self.navigationItem.rightBarButtonItem = btn;
+    
+    
+    
+    [imageView setBackgroundColor:[UIColor blackColor]];
+    imageView.transform = CGAffineTransformMakeRotation(-90 * M_PI / 180);
+}
+
+-(void)viewDidAppear:(BOOL)animated
+{
+    [super viewDidDisappear:animated];
+    [self StartClient];
+}
+
+-(void)StartClient
+{
+    m_runThread = true;
+    [imageView setImage:nil];
+    [imageView setBackgroundColor:[UIColor blackColor]];
+    [JSWaiter ShowWaiter:self title:@"Connecting . . ." type:0];
+    [NSTimer scheduledTimerWithTimeInterval:0.1f target:self selector:@selector(ConnectServer) userInfo:nil repeats:NO];
+    [self setTitle:m_pCameraProperties.name];
+}
+
+-(void)viewDidDisappear:(BOOL)animated
+{
+    [super viewDidDisappear:animated];
+    m_runThread = false;
+    [video closeAudio];
+}
+
+- (void)didReceiveMemoryWarning
+{
+    [super didReceiveMemoryWarning];
+    // Dispose of any resources that can be recreated.
+}
+
+- (void) willAnimateRotationToInterfaceOrientation:(UIInterfaceOrientation)toInterfaceOrientation duration:(NSTimeInterval)duration
+{
+    // this is not the most beautiful animation...
+//    if (!video)
+//        return;
+//    if (UIInterfaceOrientationIsLandscape(toInterfaceOrientation))
+//    {
+//        video.outputWidth = 480;
+//        video.outputHeight = 320;
+//    }
+//    else
+//    {
+//        video.outputWidth = 320;
+//        video.outputHeight = 480;
+//    }
+}
+
+-(void)ConnectServer
+{
+    video = [[RTSPPlayer alloc] initWithVideo:[NSString stringWithFormat:@"rtsp://%@/iBaby", m_pCameraProperties.ipAddress] usesTcp:NO];
+    video.outputWidth = 480;
+    video.outputHeight = 320;
+
+    NSLog(@"video duration: %f",video.duration);
+    NSLog(@"video size: %d x %d", video.sourceWidth, video.sourceHeight);
+//    if (video.sourceHeight == 0 && video.sourceWidth == 0)
+//    {
+//        [video release];
+//        [NSTimer scheduledTimerWithTimeInterval:1 target:self selector:@selector(ConnectServer) userInfo:nil repeats:NO];
+//        return;
+//    }
+
+    [self StartMonitoring];
+    [JSWaiter HideWaiter];
+}
+
+-(void)StartMonitoring
+{
+	lastFrameTime = -1;
+	[NSTimer scheduledTimerWithTimeInterval:1.0/20
+                                                           target:self
+                                                         selector:@selector(displayNextFrame:)
+                                                         userInfo:nil
+                                                          repeats:NO];
+    
+    [self performSelectorInBackground:@selector(GetBuffer) withObject:nil];
+}
+
+-(void)GetBuffer
+{
+    while (m_runThread) {
+        if (![video stepFrame]) {
+            [video closeAudio];
+            [self performSelectorOnMainThread:@selector(StartClient) withObject:nil waitUntilDone:NO];
+            break;
+        }
+        sleep(0.01f);
+    }
+}
+
+#define LERP(A,B,C) ((A)*(1.0-C)+(B)*C)
+
+-(void)displayNextFrame:(NSTimer *)timer
+{
+    if (!m_runThread)
+        return;
+	NSTimeInterval startTime = [NSDate timeIntervalSinceReferenceDate];
+    if (video)
+        imageView.image = [self flipImage:video.currentImage direction:@"y"];
+    
+	float frameTime = 1.0/([NSDate timeIntervalSinceReferenceDate]-startTime);
+	if (lastFrameTime<0) {
+		lastFrameTime = frameTime;
+	} else {
+		lastFrameTime = LERP(frameTime, lastFrameTime, 0.8);
+	}
+    
+    [NSTimer scheduledTimerWithTimeInterval:1.0/20
+                                 target:self
+                               selector:@selector(displayNextFrame:)
+                               userInfo:nil
+                                repeats:NO];
+
+}
+
+- (UIImage *) flipImage:(UIImage *)originalImage direction:(NSString *)axis
+{
+    UIImageView *tempImageView = [[UIImageView alloc] initWithImage:originalImage];
+    
+    UIGraphicsBeginImageContext(tempImageView.frame.size);
+    CGContextRef context = UIGraphicsGetCurrentContext();
+    CGAffineTransform flipVertical = CGAffineTransformMake(0, 0, 0, 0, 0, 0);
+    if([axis isEqualToString:@"x"])
+    {
+        flipVertical = CGAffineTransformMake(1, 0, 0, -1, 0, tempImageView.frame.size.height);
+    }
+    else if([axis isEqualToString:@"y"] )
+    {
+        flipVertical = CGAffineTransformMake(-1, 0, 0, 1, tempImageView.frame.size.width, 0);
+    }
+    CGContextConcatCTM(context, flipVertical);
+    
+    [tempImageView.layer renderInContext:context];
+    
+    UIImage *flipedImage = UIGraphicsGetImageFromCurrentImageContext();
+    UIGraphicsEndImageContext();
+    [tempImageView release];
+    
+    return flipedImage;
+}
+
+-(void)setCameraProperties:(OrantekCameraProperties*)camera
+{
+    m_pCameraProperties = [camera retain];
+}
+
+- (void)barButtonClicked
+{
+    if([m_pCameraProperties.cameraModel isEqualToString:@"iOS device"])
+    {
+        iOSCameraSettingViewController* vw = [[iOSCameraSettingViewController alloc] initWithNibName:@"iOSCameraSettingViewController" bundle:nil];
+        [vw setCameraProperties:m_pCameraProperties];
+        [self.navigationController pushViewController:vw animated:YES];
+        [vw release];
+    }
+    else
+    {
+        CameraPropertiesMenu* detailViewController = [[CameraPropertiesMenu alloc] initWithCam:m_pCameraProperties];
+        [self.navigationController pushViewController:detailViewController animated:YES];
+    }
+}
+
+@end

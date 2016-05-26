@@ -1,0 +1,103 @@
+
+#include "MyVideoSource.h"
+#include "MyMediaSource.h"
+#include "GroupsockHelper.hh"
+
+EventTriggerId MyVideoSource::m_eventTriggerID = 0;
+
+MyVideoSource* MyVideoSource::createNew(UsageEnvironment& env, MyMediaSource& mediaSource)
+{
+	return new MyVideoSource( env, mediaSource );
+}
+
+MyVideoSource::MyVideoSource(UsageEnvironment& env, MyMediaSource& mediaSource)
+	: FramedSource( env ), m_mediaSource( mediaSource )
+{
+    m_mutex.Init();
+	OutPacketBuffer::maxSize = VIDEO_BITRATE + AUDIO_BITRATE;
+	if (m_eventTriggerID == 0)
+		m_eventTriggerID = envir().taskScheduler().createEventTrigger(deliverFrame0);
+}
+
+MyVideoSource::~MyVideoSource(void)
+{
+	m_mediaSource.m_pVSource = NULL;
+
+	envir().taskScheduler().deleteEventTrigger( m_eventTriggerID );
+	m_eventTriggerID = 0;
+}
+
+void MyVideoSource::audioReadyPoller(void* clientData) {
+    MyVideoSource* inputDevice = (MyVideoSource*)clientData;
+    inputDevice->doGetNextFrame();
+}
+
+void MyVideoSource::doGetNextFrame()
+{
+	if (!m_packetArray.empty())
+		deliverFrame();
+    else
+        nextTask() = envir().taskScheduler().scheduleDelayedTask(1000 * 100, (TaskFunc*)audioReadyPoller, this);
+}
+
+void MyVideoSource::Add(AVPacket* packet)
+{
+	if (packet == NULL)
+		return;
+
+	AVPacket* newPacket = new AVPacket;
+	av_copy_packet( newPacket, packet );
+
+	m_mutex.Lock();
+    m_packetArray.push_back(newPacket);
+	m_mutex.Unlock();
+}
+
+void MyVideoSource::deliverFrame0(void* clientData)
+{
+	((MyVideoSource*)clientData)->deliverFrame();
+}
+
+void MyVideoSource::deliverFrame()
+{
+	if (!isCurrentlyAwaitingData())
+		return;
+
+	if (m_packetArray.empty())
+		return;
+
+	AVPacket* packet = (AVPacket*)m_packetArray[0];
+	u_int8_t* data = packet->data;
+	unsigned size = packet->size;
+    
+	// Deliver the data here:
+	if (size > fMaxSize)
+	{
+		fFrameSize = fMaxSize;
+		fNumTruncatedBytes = size - fMaxSize;
+	}
+	else
+	{
+		fFrameSize = size;
+		fNumTruncatedBytes = 0;
+	}
+
+	memmove(fTo, data, fFrameSize);
+
+	if (fNumTruncatedBytes == 0)
+	{
+		m_mutex.Lock();
+		m_packetArray.erase(m_packetArray.begin());
+		m_mutex.Unlock();
+
+		av_free_packet( packet );
+		delete packet;
+	}
+	else
+	{
+		memmove( packet->data, packet->data + fFrameSize, fNumTruncatedBytes );
+		packet->size = fNumTruncatedBytes;
+	}
+
+	FramedSource::afterGetting((FramedSource*)this);
+}

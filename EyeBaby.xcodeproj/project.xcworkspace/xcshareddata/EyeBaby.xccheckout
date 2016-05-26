@@ -1,0 +1,52 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<key>IDESourceControlProjectFavoriteDictionaryKey</key>
+	<false/>
+	<key>IDESourceControlProjectIdentifier</key>
+	<string>7650814B-AFC8-45B2-A7B5-180E33A7A686</string>
+	<key>IDESourceControlProjectName</key>
+	<string>EyeBaby</string>
+	<key>IDESourceControlProjectOriginsDictionary</key>
+	<dict>
+		<key>BDAA01DD-21EC-47C9-AB8F-BDD532FFF490</key>
+		<string>https://ruhe.svn.beanstalkapp.com/eyebaby/trunk</string>
+	</dict>
+	<key>IDESourceControlProjectPath</key>
+	<string>EyeBaby.xcodeproj/project.xcworkspace</string>
+	<key>IDESourceControlProjectRelativeInstallPathDictionary</key>
+	<dict>
+		<key>BDAA01DD-21EC-47C9-AB8F-BDD532FFF490</key>
+		<string>../..</string>
+	</dict>
+	<key>IDESourceControlProjectRepositoryRootDictionary</key>
+	<dict>
+		<key>BDAA01DD-21EC-47C9-AB8F-BDD532FFF490</key>
+		<string>https://ruhe.svn.beanstalkapp.com/eyebaby</string>
+	</dict>
+	<key>IDESourceControlProjectURL</key>
+	<string>https://ruhe.svn.beanstalkapp.com/eyebaby/trunk/EyeBaby.xcodeproj</string>
+	<key>IDESourceControlProjectVersion</key>
+	<integer>110</integer>
+	<key>IDESourceControlProjectWCCIdentifier</key>
+	<string>BDAA01DD-21EC-47C9-AB8F-BDD532FFF490</string>
+	<key>IDESourceControlProjectWCConfigurations</key>
+	<array>
+		<dict>
+			<key>IDESourceControlRepositoryBranchesRelativeLocationKey</key>
+			<string>branches</string>
+			<key>IDESourceControlRepositoryExtensionIdentifierKey</key>
+			<string>public.vcs.subversion</string>
+			<key>IDESourceControlRepositoryTagsRelativeLocationKey</key>
+			<string>tags</string>
+			<key>IDESourceControlRepositoryTrunkRelativeLocationKey</key>
+			<string>trunk</string>
+			<key>IDESourceControlWCCIdentifierKey</key>
+			<string>BDAA01DD-21EC-47C9-AB8F-BDD532FFF490</string>
+			<key>IDESourceControlWCCName</key>
+			<string>eyebaby</string>
+		</dict>
+	</array>
+</dict>
+</plist>

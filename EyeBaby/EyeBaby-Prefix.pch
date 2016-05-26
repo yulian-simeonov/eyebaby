@@ -1,0 +1,47 @@
+//
+// Prefix header for all source files of the 'EyeBaby' target in the 'EyeBaby' project
+//
+
+#import <Availability.h>
+
+#ifndef __IPHONE_4_0
+#warning "This project uses features only available in iOS SDK 4.0 and later."
+#endif
+
+#define NO_DEPRECATED
+
+#ifdef DEBUG
+//    #define USE_TESTFLIGHT
+#endif
+
+#ifdef __OBJC__
+    #import <UIKit/UIKit.h>
+    #import <Foundation/Foundation.h>
+
+#ifdef USE_TESTFLIGHT
+
+    #import "TestFlight.h"
+
+    #define NSLog TFLog
+
+    #define TF_CHECKPOINT(x)    { [TestFlight passCheckpoint: x ]; NSLog(@"Checkpoint: %@", x ); }
+
+#else
+
+    #define TF_CHECKPOINT(x)   /* NOTHING */
+
+#endif
+
+// Debug logging...
+#ifdef DEBUG
+#define TRACE(fmt, ...) NSLog((@"%s " fmt), __PRETTY_FUNCTION__, ##__VA_ARGS__)
+#else
+#define TRACE(fmt, ...) /* No logging */
+#endif
+
+#endif // __OBJC__
+
+#define APP ((AppDelegate*)[[UIApplication sharedApplication] delegate])
+#define IS_IPHONE_4 ([[UIScreen mainScreen] bounds].size.height == 480)
+#define IS_IPAD (UI_USER_INTERFACE_IDIOM() == UIUserInterfaceIdiomPad)
+

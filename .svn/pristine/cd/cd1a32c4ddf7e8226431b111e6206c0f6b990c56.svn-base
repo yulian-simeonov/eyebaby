@@ -1,0 +1,14 @@
+prefix=/Users/songil/Desktop/ffmpeg-2.1.1/build/built/armv7
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libavformat
+Description: FFmpeg container format library
+Version: 55.12.100
+Requires: libavcodec = 55.18.102
+Requires.private: 
+Conflicts:
+Libs: -L${libdir} -lavformat -lx264 -lm -lz
+Libs.private: 
+Cflags: -I${includedir}

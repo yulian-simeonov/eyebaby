@@ -1,0 +1,27 @@
+//
+//  RTSPServerConfig.h
+//  EyeBaby
+//
+//  Created by     on 11/26/13.
+//
+//
+
+#if __cplusplus
+extern "C"
+{
+#endif
+#include <libavcodec/avcodec.h>
+#include <libavformat/avformat.h>
+#include <libavutil/avutil.h>
+#include <libswresample/swresample.h>
+#include <libswscale/swscale.h>
+#if __cplusplus
+};
+#endif
+
+#define VIDEO_BITRATE 400000
+#define AUDIO_SAMPLERATE 48000
+#define AUDIO_CHANNELS 2
+#define AUDIO_BITRATE 128000
+
+

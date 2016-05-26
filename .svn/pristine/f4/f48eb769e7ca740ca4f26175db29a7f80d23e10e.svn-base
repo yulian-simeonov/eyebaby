@@ -1,0 +1,14 @@
+prefix=/Users/songil/Desktop/ffmpeg-2.1.1/build/built/armv7
+exec_prefix=${prefix}
+libdir=${prefix}/lib
+includedir=${prefix}/include
+
+Name: libavcodec
+Description: FFmpeg codec library
+Version: 55.18.102
+Requires: libavutil = 52.38.100
+Requires.private: 
+Conflicts:
+Libs: -L${libdir} -lavcodec -lx264 -lm -lz
+Libs.private: 
+Cflags: -I${includedir}

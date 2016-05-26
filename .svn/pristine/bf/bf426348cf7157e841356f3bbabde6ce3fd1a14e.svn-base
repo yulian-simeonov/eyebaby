@@ -1,0 +1,36 @@
+
+#include "MyAudioSubsession.h"
+#include "MyMP3AudioFilter.h"
+#include "MyAudioSource.h"
+
+MyAudioSubsession::MyAudioSubsession(UsageEnvironment& env, MyMediaSource& mediaSource, unsigned estBitrate)
+	: MyMediaSubsession(env, mediaSource, estBitrate)
+{
+    
+}
+
+MyAudioSubsession::~MyAudioSubsession(void)
+{
+    
+}
+
+MyAudioSubsession* MyAudioSubsession::createNew(UsageEnvironment& env, MyMediaSource& mediaSource, unsigned estBitrate)
+{
+	return new MyAudioSubsession( env, mediaSource, estBitrate );
+}
+
+FramedSource* MyAudioSubsession::createNewStreamSource(unsigned clientSessionId, unsigned& estBitrate)
+{
+	estBitrate = m_nEstimateBitrate;
+//    return MyMP3AudioFilter::createNew(envir(), m_mediaSource.GetA1Source());
+    return MPEG1or2AudioStreamFramer::createNew(envir(), m_mediaSource.GetASource());
+//    return PCMFromuLawAudioSource::createNew(envir(), m_mediaSource.GetASource());
+//    return EndianSwap16::createNew(envir(), m_mediaSource.GetASource());
+}
+
+RTPSink* MyAudioSubsession::createNewRTPSink(Groupsock* rtpGroupsock, unsigned char rtpPayloadTypeIfDynamic, FramedSource* inputSource)
+{
+//    return SimpleRTPSink::createNew(envir(), rtpGroupsock, 11, 44100, "audio", "L16");
+	return MPEG1or2AudioRTPSink::createNew( envir(), rtpGroupsock );
+}
+

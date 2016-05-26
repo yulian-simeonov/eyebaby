@@ -1,0 +1,462 @@
+//
+//  CameraServer.m
+//  Encoder Demo
+//
+//  Created by Geraint Davies on 19/02/2013.
+//  Copyright (c) 2013 GDCL http://www.gdcl.co.uk/license.htm
+//
+
+#import "CameraServer.h"
+
+
+static CameraServer* theServer;
+void interruptionListener(	void *	inClientData,
+						  UInt32	inInterruptionState);
+void propListener(	void *                  inClientData,
+				  AudioSessionPropertyID	inID,
+				  UInt32                  inDataSize,
+				  const void *            inData);
+@implementation CameraServer
++ (void) initialize
+{
+    // test recommended to avoid duplicate init via subclass
+    if (self == [CameraServer class])
+    {
+        theServer = [[CameraServer alloc] init];
+    }
+}
+
++ (CameraServer*) server
+{
+    return theServer;
+}
+
+-(id)init
+{
+    if (self = [super init])
+    {
+        m_serverManager = [[RTSPServerManager alloc] init];
+        m_audioMutex.Init();
+        m_videoMutex.Init();
+        m_pRecorder = new AQRecorder(self);
+        m_pRecorder->SetupAudioFormat(kAudioFormatLinearPCM);
+    }
+    return self;
+}
+
+#pragma Video&Audio Capture
+- (void) startup:(AVCaptureDevicePosition)cameraType
+{
+    if (_session == nil)
+    {
+        NSLog(@"Starting up server");
+        if (![m_serverManager Run])
+            return;
+        
+        m_videoBufferSize = 0;
+        m_audioBufferSize = 0;
+        m_bStopThreads = false;
+        [self InitCodec];
+        
+//        m_pRecorder->StartRecord();
+        // create capture device with video input
+        _session = [[AVCaptureSession alloc] init];
+        
+        // Audio
+//        dispatch_queue_t outputAudioQueue = dispatch_queue_create("MyAudioQueue", NULL);
+//        AVCaptureDevice *audioCaptureDevice = [AVCaptureDevice defaultDeviceWithMediaType:AVMediaTypeAudio];
+//        NSError *error = nil;
+//        AVCaptureDeviceInput *audioInput = [AVCaptureDeviceInput deviceInputWithDevice:audioCaptureDevice error:&error];
+//        if (audioInput)
+//            [_session addInput:audioInput];
+//        else {
+//            NSLog(@"No audio input found.");
+//            return;
+//        }
+//        _audioOutput = [[AVCaptureAudioDataOutput alloc] init];
+//        [_audioOutput setSampleBufferDelegate:self queue:outputAudioQueue];
+//        [_session addOutput:_audioOutput];
+        
+        // Video
+        NSArray *devices = [AVCaptureDevice devicesWithMediaType:AVMediaTypeVideo];
+        for (AVCaptureDevice *device in devices)
+        {
+            if ([device position] == cameraType)
+            {
+                dev = device;
+                break;
+            }
+        }
+        AVCaptureDeviceInput* input = [AVCaptureDeviceInput deviceInputWithDevice:dev error:nil];
+        [_session addInput:input];
+        
+        dispatch_queue_t outputVideoQueue = dispatch_queue_create("MyVideoQueue", NULL);
+        // create an output for YUV output with self as delegate
+        _videoOutput = [[AVCaptureVideoDataOutput alloc] init];
+        [_videoOutput setSampleBufferDelegate:self queue:outputVideoQueue];
+        NSDictionary* setcapSettings = [NSDictionary dictionaryWithObjectsAndKeys:
+                                        [NSNumber numberWithInt:kCVPixelFormatType_32BGRA], kCVPixelBufferPixelFormatTypeKey,
+                                        nil];
+        _videoOutput.videoSettings = setcapSettings;
+        [_session addOutput:_videoOutput];
+        
+        // start capture and a preview layer
+         _session.sessionPreset = AVCaptureSessionPresetLow;
+        [_session startRunning];
+        _preview = [AVCaptureVideoPreviewLayer layerWithSession:_session];
+        _preview.videoGravity = AVLayerVideoGravityResizeAspectFill;
+        
+//        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND,
+//                                                 (unsigned long)NULL), ^(void) {
+//            [self AudioEncode];
+//        });
+        
+        dispatch_async(dispatch_get_global_queue(DISPATCH_QUEUE_PRIORITY_BACKGROUND,
+                                                 (unsigned long)NULL), ^(void) {
+            [self VideoEncode];
+        });
+    }
+    NSLog(@"%@", [self getURL]);
+}
+
+- (void) shutdown
+{
+    NSLog(@"shutting down server");
+    if (_session)
+    {
+        [_session stopRunning];
+        _session = nil;
+    }
+    
+    if (m_serverManager)
+    {
+        [m_serverManager End];
+    }
+    m_bStopThreads = true;
+}
+
+- (void) captureOutput:(AVCaptureOutput *)captureOutput didOutputSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection
+{
+    // pass frame to encoder
+    BOOL isVideo = NO;
+    if (captureOutput == _videoOutput)
+        isVideo = YES;
+    if (!CMSampleBufferDataIsReady(sampleBuffer))
+        return;
+    
+    [self encodeFrame:sampleBuffer isVideo:isVideo];
+}
+
+- (void)captureOutput:(AVCaptureOutput *)captureOutput didDropSampleBuffer:(CMSampleBufferRef)sampleBuffer fromConnection:(AVCaptureConnection *)connection
+{
+    if (captureOutput != _videoOutput)
+        NSLog(@"audio dropped");
+}
+
+- (NSString*) getURL
+{
+    if (m_serverManager)
+        return [m_serverManager GetServerUrl];
+    else
+        return nil;
+}
+
+- (AVCaptureVideoPreviewLayer*) getPreviewLayer
+{
+    return _preview;
+}
+
+- (void)video:(NSString*)videoPath didFinishSavingWithError:(NSError*)error contextInfo:(void*)contextInfo
+{
+    if (error)
+    {
+        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Error" message:@"Photo/Video Saving Failed"  delegate:nil cancelButtonTitle:@"Ok" otherButtonTitles: nil];
+        [alert show];
+    }
+    else
+    {
+        UIAlertView *alert = [[UIAlertView alloc] initWithTitle:@"Photo/Video Saved" message:@"Saved To Photo Album"  delegate:self cancelButtonTitle:@"Ok" otherButtonTitles: nil];
+        [alert show];
+    }
+}
+
+- (void) encodeFrame:(CMSampleBufferRef) sampleBuffer isVideo:(BOOL)video
+{
+    if (video)
+    {
+        if (!m_vContext || !m_serverManager)
+            return;
+        
+        CVImageBufferRef pixelBuffer = CMSampleBufferGetImageBuffer(sampleBuffer);
+        CVPixelBufferLockBaseAddress(pixelBuffer, 0);
+        int width = CVPixelBufferGetWidth(pixelBuffer);
+        int height = CVPixelBufferGetHeight(pixelBuffer);
+        unsigned char *rawPixelBase = (unsigned char *)CVPixelBufferGetBaseAddress(pixelBuffer);
+        CVPixelBufferUnlockBaseAddress(pixelBuffer, 0);
+        
+        memcpy(m_videoBuffer + m_videoBufferSize, rawPixelBase, width * height * 4);
+        m_videoBufferSize += width * height * 4;
+    }
+    else
+    {
+        if (!m_aContext || !m_serverManager)
+            return;
+        
+        CMItemCount numSamples = CMSampleBufferGetNumSamples(sampleBuffer); //CMSampleBufferRef
+        NSUInteger channelIndex = 0;
+        CMBlockBufferRef audioBlockBuffer = CMSampleBufferGetDataBuffer(sampleBuffer);
+        size_t audioBlockBufferOffset = (channelIndex * numSamples * sizeof(SInt16));
+        size_t lengthAtOffset = 0;
+        size_t totalLength = 0;
+        SInt16 *samples = NULL;
+        CMBlockBufferGetDataPointer(audioBlockBuffer, audioBlockBufferOffset, &lengthAtOffset, &totalLength, (char **)(&samples));
+        
+//        const AudioStreamBasicDescription *audioDescription = CMAudioFormatDescriptionGetStreamBasicDescription(CMSampleBufferGetFormatDescription(sampleBuffer));
+        
+        if (m_audioBufferSize > m_aContext->frame_size * 10)
+            return;
+        memcpy(m_audioBuffer + m_audioBufferSize, samples,totalLength);
+        m_audioBufferSize += totalLength;
+    }
+}
+
+-(void)VideoEncode
+{
+    while(!m_bStopThreads)
+    {
+        if (m_videoBufferSize < m_captureWidth * m_captureHeight * 4)
+        {
+            sleep(0.01f);
+            continue;
+        }
+        
+        if (m_serverManager)
+        {
+            AVFrame *pSrcFrame = avcodec_alloc_frame();
+            avpicture_fill((AVPicture*)pSrcFrame, m_videoBuffer, AV_PIX_FMT_BGRA, m_captureWidth, m_captureHeight);//PIX_FMT_RGB32//PIX_FMT_RGB8
+            
+            AVFrame *pDstFrame = avcodec_alloc_frame();
+            avpicture_fill((AVPicture*)pDstFrame, m_pYUBBuffer, AV_PIX_FMT_YUV420P, m_vContext->width, m_vContext->height);
+            
+            //perform the conversion
+            sws_scale(m_vConvContext, pSrcFrame->data, pSrcFrame->linesize, 0, m_vContext->height, pDstFrame->data, pDstFrame->linesize);
+            
+            //Encode
+            AVPacket* packet = new AVPacket();
+            av_init_packet(packet);
+            packet->size = 0;
+            packet->data = NULL;
+            int nSuccessed;
+            if (avcodec_encode_video2(m_vContext, packet, pDstFrame, &nSuccessed) == 0 && nSuccessed == 1)
+                [m_serverManager AddVideo:packet];
+            av_free_packet(packet);
+            delete packet;
+            
+            av_free(pSrcFrame);
+            av_free(pDstFrame);
+        }
+        memmove(m_videoBuffer, m_videoBuffer + m_captureWidth * m_captureHeight * 4, m_videoBufferSize - m_captureWidth * m_captureHeight * 4);
+        m_videoBufferSize -= m_captureWidth * m_captureHeight * 4;
+    }
+}
+
+-(void)AudioEncode
+{
+    while(!m_bStopThreads)
+    {
+        if (m_audioBufferSize < m_aContext->frame_size * 2)
+        {
+            sleep(0.01f);
+            continue;
+        }
+        
+        if (m_serverManager)
+        {
+            int nSamples = m_aContext->frame_size;
+            AVFrame* srcFrame = av_frame_alloc();
+            srcFrame->nb_samples = nSamples;
+            avcodec_fill_audio_frame( srcFrame, 1, AV_SAMPLE_FMT_S16, (const uint8_t*)m_audioBuffer, m_aContext->frame_size * 2, 1 );
+            int out_buf_len = av_samples_get_buffer_size( NULL, AUDIO_CHANNELS, nSamples, m_aContext->sample_fmt, 1 );
+
+            AVFrame* dstFrame = av_frame_alloc();
+            dstFrame->nb_samples = nSamples;
+            avcodec_fill_audio_frame( dstFrame, AUDIO_CHANNELS, m_aContext->sample_fmt, (const uint8_t*)m_tmpBuf, out_buf_len, 1 );
+            swr_convert( m_aConvContext, (uint8_t**)&dstFrame->data, nSamples, (const uint8_t**)&srcFrame->data, nSamples );
+            
+            AVPacket* packet = new AVPacket;
+            av_init_packet( packet );
+            packet->size = 0;
+            packet->data = NULL;
+            int nSucceded;
+            if (avcodec_encode_audio2( m_aContext, packet, dstFrame, &nSucceded) == 0 && nSucceded == 1)
+                [m_serverManager AddAudioRaw:packet->data size:packet->size];
+            av_free_packet( packet );
+            delete packet;
+
+            av_frame_free( &srcFrame );
+            av_frame_free( &dstFrame );
+            delete srcFrame;
+            delete dstFrame;
+        }
+        memmove(m_audioBuffer, m_audioBuffer + m_aContext->frame_size * 2, m_audioBufferSize - m_aContext->frame_size * 2);
+        m_audioBufferSize -= m_aContext->frame_size * 2;
+    }
+}
+
+-(void)CapturedAudioBuffer:(SInt16*)buffer size:(int)bufSize
+{
+    if (!m_aContext || !m_serverManager)
+        return;
+
+    memcpy(m_audioBuffer + m_audioBufferSize, buffer,bufSize);
+    m_audioBufferSize += bufSize;
+    
+    while (m_audioBufferSize > m_aContext->frame_size * 2) {
+        int nSamples = m_aContext->frame_size;
+        AVFrame* srcFrame = av_frame_alloc();
+        srcFrame->nb_samples = nSamples;
+        avcodec_fill_audio_frame( srcFrame, 1, AV_SAMPLE_FMT_S16, (const uint8_t*)m_audioBuffer, m_aContext->frame_size * 2, 1 );
+        int out_buf_len = av_samples_get_buffer_size( NULL, AUDIO_CHANNELS, nSamples, m_aContext->sample_fmt, 1 );
+        
+        AVFrame* dstFrame = av_frame_alloc();
+        dstFrame->nb_samples = nSamples;
+        avcodec_fill_audio_frame( dstFrame, AUDIO_CHANNELS, m_aContext->sample_fmt, (const uint8_t*)m_tmpBuf, out_buf_len, 1 );
+        swr_convert( m_aConvContext, (uint8_t**)&dstFrame->data, nSamples, (const uint8_t**)&srcFrame->data, nSamples );
+        
+        AVPacket* packet = new AVPacket;
+        av_init_packet( packet );
+        packet->size = 0;
+        packet->data = NULL;
+        int nSucceded;
+        if (avcodec_encode_audio2( m_aContext, packet, dstFrame, &nSucceded) == 0 && nSucceded == 1)
+            [m_serverManager AddAudioRaw:packet->data size:packet->size];
+        av_free_packet( packet );
+        delete packet;
+        
+        av_frame_free( &srcFrame );
+        av_frame_free( &dstFrame );
+        delete srcFrame;
+        delete dstFrame;
+        
+        memmove(m_audioBuffer, m_audioBuffer + m_aContext->frame_size * 2, m_audioBufferSize - m_aContext->frame_size * 2);
+        m_audioBufferSize -= m_aContext->frame_size * 2;
+    }
+}
+
+-(void)InitCodec
+{
+    m_captureWidth = 192;
+    m_captureHeight = 144;
+    
+    av_register_all();
+    avcodec_register_all();
+    
+    // Video codec
+    AVCodec* vCodec =avcodec_find_encoder(CODEC_ID_H264);
+    
+    if (!vCodec) {
+        fprintf(stderr, "codec not found\n");
+        exit(1);
+    }
+    
+    m_vContext= avcodec_alloc_context3(vCodec);
+    avcodec_get_context_defaults3(m_vContext, vCodec);
+    
+    m_vContext->pix_fmt = PIX_FMT_YUV420P;
+    m_vContext->time_base.num = 1;
+    m_vContext->time_base.den = 30;
+    m_vContext->width = 480;
+    m_vContext->height = 320;
+    m_vContext->bit_rate = VIDEO_BITRATE;
+    m_vContext->bit_rate_tolerance = 0;
+    m_vContext->rc_max_rate = VIDEO_BITRATE;
+    m_vContext->rc_min_rate = VIDEO_BITRATE;
+    m_vContext->rc_buffer_size = 1835008;
+    m_vContext->gop_size = 40;
+    m_vContext->max_b_frames = 3;
+    m_vContext->b_frame_strategy = 1;
+    m_vContext->coder_type = 1;
+    m_vContext->me_cmp = FF_CMP_CHROMA;
+    m_vContext->me_range = 16;
+    m_vContext->qmin = 10;
+    m_vContext->qmax = 30;
+    m_vContext->scenechange_threshold = 40;
+    m_vContext->flags |= CODEC_FLAG_LOOP_FILTER;
+    m_vContext->me_method = ME_HEX;
+    m_vContext->me_subpel_quality = 5;
+    m_vContext->i_quant_factor = 0.71f;
+    m_vContext->qcompress = 0.6f;
+    m_vContext->max_qdiff = 4;
+    
+    m_pYUBBuffer = new u_int8_t[m_vContext->width * m_vContext->height * 3];
+    
+    m_vConvContext = sws_getContext(m_captureWidth, m_captureHeight,
+                                     AV_PIX_FMT_BGRA,
+                                     m_vContext->width, m_vContext->height,
+                                     AV_PIX_FMT_YUV420P,
+                                     SWS_FAST_BILINEAR, NULL, NULL, NULL);
+    
+    if (avcodec_open2(m_vContext, vCodec, 0) < 0) {
+        fprintf(stderr, "could not open codec\n");
+        exit(1);
+    }
+    m_videoBufferSize = 0;
+    m_videoBuffer = new unsigned char[m_vContext->width * m_vContext->height * 4 * 10];
+    
+    // Audio Codec
+    m_fInit = false;
+    
+	m_aConvContext = NULL;
+	m_aContext = NULL;
+    
+	do
+	{
+		AVCodec* pACodec = avcodec_find_encoder( AV_CODEC_ID_MP2 );
+		if (pACodec == NULL)
+			break;
+        
+		m_aContext = avcodec_alloc_context3( pACodec );
+		if (m_aContext == NULL)
+			break;
+        
+		m_aContext->sample_rate = AUDIO_SAMPLERATE;
+		m_aContext->channels = AUDIO_CHANNELS;
+		m_aContext->sample_fmt = pACodec->sample_fmts[0];
+		m_aContext->bit_rate = AUDIO_BITRATE;
+        
+		if (avcodec_open2( m_aContext, pACodec, NULL ) < 0)
+			break;
+        
+		m_aConvContext = swr_alloc();
+		swr_alloc_set_opts(m_aConvContext,
+                                        AV_CH_LAYOUT_STEREO,
+                                        m_aContext->sample_fmt,
+                                        AUDIO_SAMPLERATE,
+                                        AV_CH_LAYOUT_MONO,
+                                        AV_SAMPLE_FMT_S16,
+                                        44100,
+                                        0, NULL );
+		if (m_aConvContext == NULL)
+			break;
+        
+		if (swr_init( m_aConvContext ) < 0)
+			break;
+        
+		m_fInit = true;
+	} while (false);
+    
+    m_audioBuffer = new uint8_t[m_aContext->frame_size * 10];
+    m_tmpBuf = new char[m_aContext->frame_size * 10];
+    memset(m_tmpBuf, 1, m_aContext->frame_size * 10);
+    m_audioBufferSize = 0;
+
+}
+
+-(void)ReleaseCodec
+{
+    avcodec_close(m_vContext);
+    av_free(m_vContext);
+    avcodec_close(m_aContext);
+    av_free(m_aContext);
+}
+@end
